@@ -93,7 +93,7 @@ fn errno(e: &anyhow::Error) -> Errno {
         Some(drive::Error::NotEmpty) => Errno::ENOTEMPTY,
         Some(drive::Error::NotDir) => Errno::ENOTDIR,
         Some(drive::Error::IsDir) => Errno::EISDIR,
-        Some(drive::Error::NeedsOpen) => Errno::EIO,
+        Some(drive::Error::NeedsOpen) | Some(drive::Error::NoDrive) => Errno::EIO,
         None => {
             tracing::warn!("{e:#}");
             Errno::EIO

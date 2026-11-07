@@ -26,6 +26,8 @@
         };
       });
 
+      nixosModules.default = import ./nixos.nix self;
+
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.gcc ];

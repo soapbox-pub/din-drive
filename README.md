@@ -34,6 +34,34 @@ din-drive empty-trash
 din-drive status
 ```
 
+`mount` never creates a drive: if the signer is locked or no relay answers, it
+fails and can be retried, and with no drive at all it exits with status 3.
+
+### On NixOS
+
+```nix
+{
+  inputs.din-drive.url = "git+https://git.shakespeare.diy/npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj/din-drive.git";
+  # …
+  modules = [
+    din-drive.nixosModules.default
+    { services.din-drive = { enable = true; users = [ "alice" ]; }; }
+  ];
+}
+```
+
+This mounts each listed user's drive at `~/Drive` (`mountpoint`) with a
+systemd user service, once they've run `din-drive init`
+(`systemctl --user restart din-drive` starts it right away).
+
+### Control socket
+
+While mounted, the drive answers JSON requests, one per line, at
+`$XDG_RUNTIME_DIR/din-drive.sock`: `{"method":"status"}`, `trash`,
+`restore` (`{"params":{"id":…}}`) and `empty_trash`, replying
+`{"result":…}` or `{"error":"…"}`. `din-drive status --json`, `trash`,
+`restore` and `empty-trash` go through it when the drive is running.
+
 ### Keys
 
 Din Drive signs and decrypts through the NIP-5F signer socket that

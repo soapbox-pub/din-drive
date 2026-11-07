@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use din_drive::drive::{Drive, Kind2, Options};
 use din_drive::keys::ROOT;
 use din_drive::signer::{Nostrd, Signer, default_socket};
-use din_drive::{DEFAULT_SERVERS, Result, relays};
+use din_drive::{DEFAULT_SERVERS, Result, control, relays};
 use nostr::prelude::{Keys, ToBech32};
 use serde::Deserialize;
 
@@ -59,8 +59,14 @@ enum Command {
     Trash,
     /// Permanently delete everything in the trash.
     EmptyTrash,
+    /// Restore an item from the trash, by the id `trash` shows.
+    Restore { id: String },
     /// Show the account, relays, servers, and drive.
-    Status,
+    Status {
+        /// Print JSON (from the running drive, if it's mounted).
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Deserialize, Default)]
@@ -155,7 +161,28 @@ fn split(path: &str) -> (String, String) {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(e) = run().await {
+        eprintln!("din-drive: {e:#}");
+        // 3: there's no drive yet, so retrying won't help (systemd stops).
+        let no_drive = matches!(
+            e.downcast_ref::<din_drive::drive::Error>(),
+            Some(din_drive::drive::Error::NoDrive)
+        );
+        std::process::exit(if no_drive { 3 } else { 1 });
+    }
+}
+
+/// Ask the mounted drive, if there is one running.
+async fn ask(method: &str, params: serde_json::Value) -> Option<Result<serde_json::Value>> {
+    let socket = control::default_socket();
+    if tokio::net::UnixStream::connect(&socket).await.is_err() {
+        return None;
+    }
+    Some(control::request(&socket, method, params).await)
+}
+
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "din_drive=info".into()),
@@ -171,7 +198,9 @@ async fn main() -> Result<()> {
             drive.shutdown().await;
         }
         Command::Mount { path } => {
-            let (drive, config) = open(&cli, true).await?;
+            // Never create a drive here: at boot the signer may be locked or
+            // the network down, and that mustn't look like having no drive.
+            let (drive, config) = open(&cli, false).await?;
             let mountpoint = path
                 .clone()
                 .or(config.mountpoint)
@@ -251,24 +280,63 @@ async fn main() -> Result<()> {
             drive.shutdown().await;
         }
         Command::Trash => {
-            let (drive, _) = open(&cli, false).await?;
-            drive.sync().await?;
-            for d in drive.trash() {
-                if let Some(c) = drive.content(&d) {
-                    println!("{}  {}", c.trashed.unwrap_or(0), c.name.unwrap_or_default());
+            let items = match ask("trash", serde_json::Value::Null).await {
+                Some(v) => v?,
+                None => {
+                    let (drive, _) = open(&cli, false).await?;
+                    drive.sync().await?;
+                    let items = drive.trash_items();
+                    drive.shutdown().await;
+                    serde_json::to_value(items)?
                 }
+            };
+            for item in items.as_array().into_iter().flatten() {
+                println!(
+                    "{}  {}",
+                    item["id"].as_str().unwrap_or(""),
+                    item["name"].as_str().unwrap_or("")
+                );
             }
-            drive.shutdown().await;
         }
+        Command::Restore { id } => match ask("restore", serde_json::json!({ "id": id })).await {
+            Some(v) => {
+                v?;
+            }
+            None => {
+                let (drive, _) = open(&cli, false).await?;
+                drive.sync().await?;
+                drive.restore(id)?;
+                drive.flush().await?;
+                drive.shutdown().await;
+            }
+        },
         Command::EmptyTrash => {
-            let (drive, _) = open(&cli, false).await?;
-            drive.sync().await?;
-            let n = drive.empty_trash(None).await?;
-            drive.flush().await?;
+            let n = match ask("empty_trash", serde_json::Value::Null).await {
+                Some(v) => v?.as_u64().unwrap_or(0) as usize,
+                None => {
+                    let (drive, _) = open(&cli, false).await?;
+                    drive.sync().await?;
+                    let n = drive.empty_trash(None).await?;
+                    drive.flush().await?;
+                    drive.shutdown().await;
+                    n
+                }
+            };
             println!("Deleted {n} item(s)");
-            drive.shutdown().await;
         }
-        Command::Status => {
+        Command::Status { json: true } => {
+            let status = match ask("status", serde_json::Value::Null).await {
+                Some(v) => v?,
+                None => {
+                    let (drive, _) = open(&cli, false).await?;
+                    let status = serde_json::to_value(drive.status().await?)?;
+                    drive.shutdown().await;
+                    status
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&status)?);
+        }
+        Command::Status { json: false } => {
             let (drive, _) = open(&cli, false).await?;
             let applied = drive.sync().await?;
             println!("account: {}", drive.pubkey.to_bech32()?);
@@ -285,6 +353,16 @@ async fn main() -> Result<()> {
 }
 
 async fn mount(drive: Arc<Drive>, mountpoint: &Path) -> Result<()> {
+    // A mount left behind by a crash answers "transport endpoint is not
+    // connected"; clear it first.
+    if let Err(e) = std::fs::metadata(mountpoint)
+        && e.raw_os_error() == Some(libc::ENOTCONN)
+    {
+        let _ = std::process::Command::new("fusermount3")
+            .arg("-uz")
+            .arg(mountpoint)
+            .status();
+    }
     std::fs::create_dir_all(mountpoint)?;
     match drive.sync().await {
         Ok(n) => tracing::info!("synced {n} change(s)"),
@@ -304,6 +382,11 @@ async fn mount(drive: Arc<Drive>, mountpoint: &Path) -> Result<()> {
     let session = fuser::spawn_mount(fs, mountpoint, &config)
         .with_context(|| format!("mounting at {}", mountpoint.display()))?;
     tracing::info!("mounted at {}", mountpoint.display());
+    control::serve(
+        drive.clone(),
+        &control::default_socket(),
+        mountpoint.to_path_buf(),
+    )?;
 
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     tokio::select! {
@@ -312,6 +395,7 @@ async fn mount(drive: Arc<Drive>, mountpoint: &Path) -> Result<()> {
     }
     tracing::info!("unmounting");
     drop(session);
+    let _ = std::fs::remove_file(control::default_socket());
     // Publish whatever is ready before exiting; uploads resume on next start.
     let _ = tokio::time::timeout(std::time::Duration::from_secs(10), drive.publish_pending()).await;
     drive.shutdown().await;

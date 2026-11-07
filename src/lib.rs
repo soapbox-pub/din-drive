@@ -3,6 +3,7 @@
 
 pub mod blossom;
 pub mod cache;
+pub mod control;
 pub mod drive;
 pub mod fs;
 pub mod keys;

@@ -80,6 +80,16 @@ impl Relays {
         Ok(rx)
     }
 
+    /// How many relays are connected right now.
+    pub async fn connected(&self) -> usize {
+        self.client
+            .relays()
+            .await
+            .values()
+            .filter(|r| r.status().is_connected())
+            .count()
+    }
+
     pub async fn shutdown(&self) {
         self.client.shutdown().await;
     }

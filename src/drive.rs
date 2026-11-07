@@ -100,6 +100,33 @@ pub struct Drive {
     fetch_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     open_writers: Mutex<HashMap<String, usize>>,
     started: u64,
+    last_error: Mutex<Option<String>>,
+}
+
+/// What the daemon reports about itself.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Status {
+    pub pubkey: String,
+    pub drive_id: String,
+    pub relays: Vec<String>,
+    pub servers: Vec<String>,
+    pub connected_relays: usize,
+    pub items: usize,
+    pub pending_uploads: usize,
+    pub pending_publish: usize,
+    pub trash: usize,
+    pub last_sync: Option<u64>,
+    pub last_error: Option<String>,
+}
+
+/// An item in the trash.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TrashItem {
+    pub id: String,
+    pub name: String,
+    pub dir: bool,
+    pub size: u64,
+    pub trashed: u64,
 }
 
 impl Drive {
@@ -117,7 +144,7 @@ impl Drive {
                 let (id, keys) = match find_home_drive(&signer, &relays, &pubkey).await? {
                     Some(found) => found,
                     None if create => create_home_drive(&signer, &relays, &pubkey).await?,
-                    None => bail!("no drive found for this account; run `din-drive init` to create one"),
+                    None => bail!(Error::NoDrive),
                 };
                 store.set_meta("drive_id", &id)?;
                 store.set_meta("dk", &keys.dk_hex())?;
@@ -153,6 +180,7 @@ impl Drive {
             fetch_locks: Mutex::new(HashMap::new()),
             open_writers: Mutex::new(HashMap::new()),
             started: now(),
+            last_error: Mutex::new(None),
         });
         // Leftover work files from a previous run.
         for e in fs::read_dir(&drive.work_dir)?.flatten() {
@@ -783,6 +811,7 @@ impl Drive {
                 Ok(()) => backoff = 1,
                 Err(e) => {
                     tracing::warn!("publishing failed: {e}");
+                    *self.last_error.lock().unwrap() = Some(format!("Couldn't publish changes: {e:#}"));
                     backoff = (backoff * 2).min(300);
                 }
             }
@@ -856,9 +885,11 @@ impl Drive {
                 match self.upload(&d, queued_at).await {
                     Ok(()) => {
                         retry_at.remove(&d);
+                        *self.last_error.lock().unwrap() = None;
                     }
                     Err(e) => {
                         tracing::warn!("upload of {d} failed: {e}");
+                        *self.last_error.lock().unwrap() = Some(format!("Couldn't upload a file: {e:#}"));
                         retry_at.insert(d, t + 60);
                     }
                 }
@@ -976,6 +1007,54 @@ impl Drive {
         Ok(())
     }
 
+    pub async fn status(&self) -> Result<Status> {
+        let (items, pending_uploads, pending_publish, last_sync, trash) = {
+            let mut st = self.st();
+            let items = st.tree.len();
+            let trash = st.tree.trash().len();
+            (
+                items,
+                st.store.uploads()?.len(),
+                st.store.dirty_nodes()?.len(),
+                st.store.get_meta("last_sync")?.and_then(|s| s.parse().ok()),
+                trash,
+            )
+        };
+        Ok(Status {
+            pubkey: self.pubkey.to_hex(),
+            drive_id: self.drive_id.clone(),
+            relays: self.relays.urls.clone(),
+            servers: self.servers.clone(),
+            connected_relays: self.relays.connected().await,
+            items,
+            pending_uploads,
+            pending_publish,
+            trash,
+            last_sync,
+            last_error: self.last_error.lock().unwrap().clone(),
+        })
+    }
+
+    /// The top level of the trash, newest first.
+    pub fn trash_items(&self) -> Vec<TrashItem> {
+        let mut items: Vec<TrashItem> = self
+            .trash()
+            .into_iter()
+            .filter_map(|id| {
+                let c = self.content(&id)?;
+                Some(TrashItem {
+                    name: c.name.clone().unwrap_or_default(),
+                    dir: c.is_dir(),
+                    size: if c.is_dir() { 0 } else { c.size.unwrap_or(0) },
+                    trashed: c.trashed.unwrap_or(0),
+                    id,
+                })
+            })
+            .collect();
+        items.sort_by_key(|i| std::cmp::Reverse(i.trashed));
+        items
+    }
+
     pub async fn shutdown(&self) {
         self.relays.shutdown().await;
     }
@@ -1038,6 +1117,8 @@ pub enum Error {
     IsDir,
     #[error("file must be opened first")]
     NeedsOpen,
+    #[error("no drive found for this account; run `din-drive init` to create one")]
+    NoDrive,
 }
 
 async fn find_home_drive(
@@ -1045,6 +1126,11 @@ async fn find_home_drive(
     relays: &Relays,
     pubkey: &PublicKey,
 ) -> Result<Option<(String, DriveKeys)>> {
+    // Deciding there's no drive when we just couldn't see it would create a
+    // second one.
+    if relays.connected().await == 0 {
+        bail!("no relay is reachable, so the drive can't be looked up");
+    }
     let events = relays
         .fetch(
             Filter::new().kind(Kind::Custom(KIND_DRIVE_KEY)).author(*pubkey),
@@ -1056,9 +1142,12 @@ async fn find_home_drive(
         let Some(id) = tag_value(&e, "d").map(str::to_string) else {
             continue;
         };
-        let Ok(plain) = signer.decrypt_from_self(&e.content).await else {
-            continue;
-        };
+        // A drive key we can't decrypt means the signer is locked or refused:
+        // stop, rather than conclude there's no drive.
+        let plain = signer
+            .decrypt_from_self(&e.content)
+            .await
+            .context("decrypting the drive key")?;
         let Ok(c) = serde_json::from_str::<DriveKeyContent>(&plain) else {
             continue;
         };

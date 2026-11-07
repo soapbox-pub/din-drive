@@ -125,3 +125,27 @@ async fn trash_and_purge() {
     b.sync().await.unwrap();
     assert!(b.trash().is_empty());
 }
+
+#[tokio::test]
+async fn never_mistakes_unreachable_for_no_drive() {
+    use din_drive::drive::{Drive, Error, Options};
+    use din_drive::signer::Signer;
+
+    let env = env().await;
+    let dir = tempfile::tempdir().unwrap();
+    let opts = |relay: &str| Options {
+        relays: vec![relay.to_string()],
+        servers: vec![env.blossom_url.clone()],
+        state_root: dir.path().to_path_buf(),
+        cache_limit: 1 << 20,
+    };
+    let signer = || Signer::Local(env.keys.clone());
+
+    // A reachable relay with no drive on it: there's no drive.
+    let err = Drive::open(signer(), opts(&env.relay_url), false).await.err().unwrap();
+    assert!(matches!(err.downcast_ref::<Error>(), Some(Error::NoDrive)));
+
+    // Nothing listening: an error, but never "no drive", and nothing created.
+    let err = Drive::open(signer(), opts("ws://127.0.0.1:9"), true).await.err().unwrap();
+    assert!(err.downcast_ref::<Error>().is_none(), "{err:#}");
+}
