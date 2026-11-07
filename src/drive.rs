@@ -99,6 +99,7 @@ pub struct Drive {
     wake_upload: Notify,
     fetch_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     open_writers: Mutex<HashMap<String, usize>>,
+    started: u64,
 }
 
 impl Drive {
@@ -151,6 +152,7 @@ impl Drive {
             wake_upload: Notify::new(),
             fetch_locks: Mutex::new(HashMap::new()),
             open_writers: Mutex::new(HashMap::new()),
+            started: now(),
         });
         // Leftover work files from a previous run.
         for e in fs::read_dir(&drive.work_dir)?.flatten() {
@@ -298,7 +300,7 @@ impl Drive {
             return Some(Info {
                 kind: Kind2::Dir,
                 size: 0,
-                mtime: 0,
+                mtime: self.started,
             });
         }
         let content = self.content(d)?;
@@ -625,18 +627,28 @@ impl Drive {
 
     /// A writer closed the file. If it changed anything, queue an upload.
     pub fn release_write(&self, d: &str, changed: bool) -> Result<()> {
-        {
+        let last_writer = {
             let mut writers = self.open_writers.lock().unwrap();
-            if let Some(n) = writers.get_mut(d) {
-                *n -= 1;
-                if *n == 0 {
+            match writers.get_mut(d) {
+                Some(n) if *n > 1 => {
+                    *n -= 1;
+                    false
+                }
+                _ => {
                     writers.remove(d);
+                    true
                 }
             }
-        }
+        };
+        let st = self.st();
         if changed {
-            self.st().store.queue_upload(d, now())?;
+            st.store.queue_upload(d, now())?;
+        } else if last_writer && !st.store.has_upload(d)? {
+            // Opened for writing but never changed: drop the copy, so reads
+            // follow the synced version again.
+            let _ = fs::remove_file(self.staging_path(d));
         }
+        drop(st);
         self.wake_upload.notify_one();
         Ok(())
     }
