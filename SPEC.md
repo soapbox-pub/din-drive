@@ -203,8 +203,10 @@ Format version 1 (`"enc": {"v": 1}`) is a STREAM construction, the same shape
 as [age](https://age-encryption.org/v1)'s payload:
 
 - The plaintext is split into **segments** of 65536 bytes. Every segment but the
-  last is exactly that size; the last is shorter, and may be empty. An empty
-  file is a single empty last segment.
+  last is exactly that size, and the last is always shorter (possibly empty), so
+  a file of `n` bytes has `floor(n / 65536) + 1` segments. An empty file is a
+  single empty segment; a file of exactly 65536 bytes is one full segment
+  followed by an empty one.
 - Each segment is sealed with AES-256-GCM under the file key, with no
   associated data, and a 12-byte nonce: an 11-byte big-endian segment counter
   starting at 0, followed by `0x01` for the last segment and `0x00` for every
