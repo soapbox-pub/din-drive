@@ -18,8 +18,11 @@
             filter = path: _type: baseNameOf path != "target";
           };
           cargoLock.lockFile = ./Cargo.lock;
-          # The end-to-end tests need a FUSE device and network sockets.
+          # The FUSE test needs /dev/fuse, which the sandbox lacks.
           checkFlags = [ "--skip" "fuse_" ];
+          # The HTTPS client wants CA certificates even for local tests.
+          nativeCheckInputs = [ pkgs.cacert ];
+          preCheck = "export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
         };
       });
 

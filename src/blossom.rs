@@ -23,13 +23,13 @@ fn url(server: &str, path: &str) -> String {
 }
 
 impl Blossom {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .user_agent(concat!("din-drive/", env!("CARGO_PKG_VERSION")))
             .build()
-            .expect("HTTP client");
-        Self { http }
+            .context("setting up HTTPS (are CA certificates installed?)")?;
+        Ok(Self { http })
     }
 
     async fn auth(&self, signer: &Signer, verb: &str, hash: &str) -> Result<String> {
@@ -169,11 +169,5 @@ impl Blossom {
             bail!("{server} rejected delete: {}", res.status());
         }
         Ok(())
-    }
-}
-
-impl Default for Blossom {
-    fn default() -> Self {
-        Self::new()
     }
 }

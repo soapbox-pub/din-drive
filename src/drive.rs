@@ -141,7 +141,7 @@ impl Drive {
             servers: opts.servers,
             signer,
             relays,
-            blossom: Blossom::new(),
+            blossom: Blossom::new()?,
             state: Mutex::new(State { store, tree }),
             cache: Cache::new(dir("cache")?)?,
             cache_limit: opts.cache_limit,
