@@ -24,6 +24,7 @@ fn url(server: &str, path: &str) -> String {
 
 impl Blossom {
     pub fn new() -> Result<Self> {
+        crate::install_crypto();
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(15))
             .user_agent(concat!("din-drive/", env!("CARGO_PKG_VERSION")))

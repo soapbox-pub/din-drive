@@ -142,10 +142,16 @@ async fn never_mistakes_unreachable_for_no_drive() {
     let signer = || Signer::Local(env.keys.clone());
 
     // A reachable relay with no drive on it: there's no drive.
-    let err = Drive::open(signer(), opts(&env.relay_url), false).await.err().unwrap();
+    let err = Drive::open(signer(), opts(&env.relay_url), false)
+        .await
+        .err()
+        .unwrap();
     assert!(matches!(err.downcast_ref::<Error>(), Some(Error::NoDrive)));
 
     // Nothing listening: an error, but never "no drive", and nothing created.
-    let err = Drive::open(signer(), opts("ws://127.0.0.1:9"), true).await.err().unwrap();
+    let err = Drive::open(signer(), opts("ws://127.0.0.1:9"), true)
+        .await
+        .err()
+        .unwrap();
     assert!(err.downcast_ref::<Error>().is_none(), "{err:#}");
 }

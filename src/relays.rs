@@ -24,6 +24,7 @@ pub struct Relays {
 
 impl Relays {
     pub async fn connect(urls: &[String]) -> Result<Self> {
+        crate::install_crypto();
         let client = Client::default();
         let mut added = Vec::new();
         for url in urls {

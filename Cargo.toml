@@ -17,6 +17,7 @@ hmac = "0.12"
 libc = "0.2.191"
 nostr = { version = "0.45", features = ["nip44", "nip59", "os-rng"] }
 nostr-sdk = "0.45"
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs"] }
 rand = "0.8"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "stream", "json"] }
 rusqlite = { version = "0.41.1", features = ["bundled"] }
