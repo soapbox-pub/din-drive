@@ -2,6 +2,9 @@
 name = "din-drive"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "An encrypted drive on Nostr and Blossom, mounted with FUSE"
+repository = "https://gitworkshop.dev/npub10qdp2fc9ta6vraczxrcs8prqnv69fru2k6s2dj48gqjcylulmtjsg9arpj/git.shakespeare.diy/din-drive"
 
 [dependencies]
 aes-gcm = "0.10"
